@@ -18,6 +18,8 @@ def main():
 	:arg name: container_name (Name of the container you are moving)
 	:arg vgname: local volume group that will hold the container 
 	
+	:assumptions: two LXC hosts running ssh with rsync installed either with ssh keys installed for root ssh'ing or with equivalent users on both machines with sudo access
+	
 	:todo: eventually [live/freeze/thaw instead of stop/start]
 	"""
 	
