@@ -30,11 +30,13 @@ class LxcMigrator:
 		self.user = 'root'
 		self.privateKeyFile = '/root/.ssh/id_rsa'
 		self.lxcLocation = '/var/lib/lxc'
+		self.lxcAutoStartDirectory = '/etc/lxc/auto'
 		self.remoteServer = None
 		self.remotePort = 22
 		self.remotePassword = None
 		self.localContainerName = None
 		self.remoteContainerName = None
+		self.autoStart = False
 		self.localVGName = None
 		self.remoteLVName = None
 		self.lvSize = None
@@ -61,6 +63,26 @@ class LxcMigrator:
 		self.getRemoteConfig()
 		self.createLocalContainer()
 		self.mountLocalContainerFS()
+		self.createProcSysDirectories()
+
+		# first pass
+		self.mountRemoteContainerFS()
+		self.rsyncFromRemote()
+		self.unmountRemoteContainerFS()
+		self.stopRemoteContainer()
+		# second pass
+		self.mountRemoteContainerFS()
+		self.rsyncFromRemote()
+		self.unmountRemoteContainerFS()
+		
+		self.unMountLocalContainerFS()
+		self.fixLocalConfig()
+		self.startLocalContainer()
+		self.setAutoStart()
+		self.lxcList()
+		print 'Migration complete.'
+		print 'You will need to manually remove the remote container if the migration was successfull'
+		
 		# todo:
 		# [on remote host] fetch size of lvm and vgname from remote host
 		# set newcontainer name = old container name if empty
@@ -75,7 +97,7 @@ class LxcMigrator:
 		# [on remote host] mount /dev/remoteLVName/containername /var/lib/lxc/containername/rootfs
 		# rsync -ravH --numeric-ids --delete-delay --delete-excluded --exclude=containername/rootfs/proc --exclude=containername/rootfs/sys -e ssh remote-host:/var/lib/lxc/containername/ /var/lib/lxc/newcontainer
 		# umount /var/lib/lxc/newcontainer/rootfs
-		# fix /var/lib/lxc/newcontainer/config to reflect new volume group (maybe fstab as well)
+		# fix /var/lib/lxc/newcontainer/config to reflect new volume group
 		# [on remote host] unmount /var/lib/lxc/containername/rootfs
 		# [on remote host] determine if there's an auto start file (and make note of that)
 		# [on remote host] rm /etc/lxc/auto/containername.conf
@@ -135,34 +157,135 @@ class LxcMigrator:
 	
 	def getRemoteConfig(self):
 		self.remoteConnect()
-		cmd = 'cat ' + self.lxcLocation + '/' + self.remoteContainerName + '/config' 
+		cmd = 'cat {self.lxcLocation}/{self.remoteContainerName}/config'.format(self=self) 
 		if self._debug:
-			print 'executing: ' + cmd
+			print 'Looking for the remote lv name: ' + cmd
 		stdin, stdout, stderr = self.ssh.exec_command(cmd)
 		for line in stdout:
 			if "lxc.rootfs" in line:
 				self.remoteLVName = line.split("=")[-1].strip()
 		#print self.remoteLVName
-		cmd = '/sbin/lvs -o lv_size --noheadings ' + self.remoteLVName
+		cmd = '/sbin/lvs -o lv_size --noheadings {self.remoteLVName}'.format(self=self)
 		if self._debug:
 			print 'Gathering LVM size: ' + cmd
 		stdin, stdout, stderr = self.ssh.exec_command(cmd)
 		for line in stdout:
 			self.lvSize = line.strip().rstrip('gGtT')
+		# see if we have an auto start file
+		cmd = 'ls -1 {self.lxcAutoStartDirectory}'.format(self=self)
+		stdin, stdout, stderr = self.ssh.exec_command(cmd)
+		for line in stdout:
+			print line
+			if line == '{self.remoteContainerName}.conf'.format(self=self):
+				self.autoStart = True
 		self.remoteDisconnect()
 	
 	def createLocalContainer(self):
-		cmd = 'lxc-create -n ' + self.localContainerName + ' -B lvm --vgname ' + self.localVGName + ' --fssize ' + self.lvSize + 'G'
+		cmd = 'lxc-create -n {self.localContainerName} -B lvm --vgname {self.localVGName} --fssize {self.lvSize}G'.format(self=self)
 		if self._debug:
 			print 'Creating local container: ' + cmd
-		shell_exec(cmd)
-	
+		try:
+			shell_exec(cmd)
+		except Exception as e:
+			print "lxc-create error (you probably already have a logical volume of this name): {0}".format(e)
+			exit()
+			
 	def mountLocalContainerFS(self):
-		cmd = 'mount /dev/' + self.localVGName + '/' + self.localContainerName + ' ' + self.lxcLocation + '/' + self.localContainerName + '/rootfs'
+		cmd = 'mount /dev/{self.localVGName}/{self.localContainerName} {self.lxcLocation}/{self.localContainerName}/rootfs'.format(self=self)
 		if self._debug:
 			print 'Mounting local lvm: ' + cmd
 		shell_exec(cmd)
+	
+	def unMountLocalContainerFS(self):
+		cmd = 'umount {self.lxcLocation}/{self.localContainerName}/rootfs'.format(self=self)
+		if self._debug:
+			print 'Unmounting local lvm: ' + cmd
+		shell_exec(cmd)
+	
+	def createProcSysDirectories(self):
+		cmd =  'mkdir {self.lxcLocation}/{self.localContainerName}/rootfs/proc'.format(self=self)
+		if self._debug:
+			print 'Creating empty proc directory: ' + cmd
+		shell_exec(cmd)
+		cmd =  'mkdir {self.lxcLocation}/{self.localContainerName}/rootfs/sys'.format(self=self)
+		if self._debug:
+			print 'Creating empty sys directory: ' + cmd
+		shell_exec(cmd)
+		
+	def mountRemoteContainerFS(self):
+		self.remoteConnect()
+		# [on remote host] mount /dev/remoteLVName/containername /var/lib/lxc/containername/rootfs
+		cmd = 'mount {self.remoteLVName} {self.lxcLocation}/{self.remoteContainerName}/rootfs'.format(self=self)
+		if self._debug:
+			print 'Mounting remote container file system: ' + cmd
+		stdin, stdout, stderr = self.ssh.exec_command(cmd)
+		for line in stdout:
+			print line
+		self.remoteDisconnect()
 
+	def rsyncFromRemote(self):
+		cmd = 'rsync -raH --numeric-ids --delete-delay --exclude={self.localContainerName}/rootfs/proc --exclude={self.localContainerName}/rootfs/sys -e "ssh -i {self.privateKeyFile}" {self.remoteServer}:{self.lxcLocation}/{self.remoteContainerName}/  {self.lxcLocation}/{self.localContainerName}'.format(self=self)
+		if self._debug:
+			print 'Rsyncing: ' + cmd
+		shell_exec(cmd)
+		
+	def unmountRemoteContainerFS(self):
+		self.remoteConnect()
+		# [on remote host] umount /var/lib/lxc/containername/rootfs
+		cmd = 'umount {self.lxcLocation}/{self.remoteContainerName}/rootfs'.format(self=self)
+		if self._debug:
+			print 'Unmounting remote container file system: ' + cmd
+		stdin, stdout, stderr = self.ssh.exec_command(cmd)
+		for line in stdout:
+			print line
+		self.remoteDisconnect()
+
+	def stopRemoteContainer(self):
+		self.remoteConnect()
+		cmd = 'lxc-shutdown -n {self.remoteContainerName}'.format(self=self)
+		if self._debug:
+			print 'Shutting down remote container: ' + cmd
+		stdin, stdout, stderr = self.ssh.exec_command(cmd)
+		for line in stdout:
+			print line
+		self.remoteDisconnect()
+		
+	def startLocalContainer(self):
+		cmd = 'lxc-start -d -n {self.localContainerName}'.format(self=self)
+		if self._debug:
+			print 'Starting local container: ' + cmd
+		shell_exec(cmd)
+		
+	def fixLocalConfig(self):
+		filename = '{self.lxcLocation}/{self.localContainerName}/config'.format(self=self)
+		localLVPath = '/dev/{self.localVGName}/{self.localContainerName}'.format(self=self)
+		if self._debug:
+			print 'replacing {self.remoteLVName} with {localLVPath} in {filename}'.format(self=self, localLVPath=localLVPath, filename=filename)
+		s = open(filename).read()
+		s = s.replace(self.remoteLVName, localLVPath)
+		f = open(filename, 'w')
+		f.write(s)
+		f.close()
+		
+	def setAutoStart(self):
+		if self.autoStart:
+			cmd = 'ln -s {self.lxcLocation}/{self.localContainerName}/config {self.lxcAutoStartDirectory}/{self.localContainerName}.conf'.format(self=self)
+			if self._debug:
+				print 'Setting container to auto start: ' + cmd
+			shell_exec(cmd)
+			self.remoteConnect()
+			cmd = 'rm {self.lxcAutoStartDirectory}/{self.remoteContainerName}.conf'.format(self=self)
+			if self._debug:
+				print 'removing auto start from remote container: ' + cmd
+			stdin, stdout, stderr = self.ssh.exec_command(cmd)
+			for line in stdout:
+				print line
+			self.remoteDisconnect()
+	
+	def lxcList(self):
+		cmd = 'lxc-list'
+		print shell_exec(cmd)
+	
 # run the migration		
 migrator = LxcMigrator()
 migrator.migrate()
