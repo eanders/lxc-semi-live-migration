@@ -175,8 +175,9 @@ class LxcMigrator:
 		cmd = 'ls -1 {self.lxcAutoStartDirectory}'.format(self=self)
 		stdin, stdout, stderr = self.ssh.exec_command(cmd)
 		for line in stdout:
-			print line
-			if line == '{self.remoteContainerName}.conf'.format(self=self):
+			#print 'looking for: {self.remoteContainerName}.conf in |{line}|'.format(self=self, line=line)
+			if line.strip() == '{self.remoteContainerName}.conf'.format(self=self):
+				print 'found: {line}'.format(line=line)
 				self.autoStart = True
 		self.remoteDisconnect()
 	
