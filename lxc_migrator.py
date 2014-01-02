@@ -9,6 +9,7 @@ import smtplib
 import string
 import paramiko, base64
 import getpass
+import time
 
 __author__ = 'elliot@marlboro.edu (Elliot Anders)'
 
@@ -79,9 +80,12 @@ class LxcMigrator:
 		self.fixLocalConfig()
 		self.startLocalContainer()
 		self.setAutoStart()
+		# give LXC a few seconds to get the new container started before we list
+		time.sleep(5)
+		
 		self.lxcList()
 		print 'Migration complete.'
-		print 'You will need to manually remove the remote container if the migration was successfull'
+		print 'You will need to manually remove the remote container if the migration was successful'
 		
 		# todo:
 		# [on remote host] fetch size of lvm and vgname from remote host
@@ -182,13 +186,15 @@ class LxcMigrator:
 		self.remoteDisconnect()
 	
 	def createLocalContainer(self):
-		cmd = 'lxc-create -n {self.localContainerName} -B lvm --vgname {self.localVGName} --fssize {self.lvSize}G'.format(self=self)
+		cmd = '/usr/bin/lxc-create -n {self.localContainerName} -B lvm --vgname {self.localVGName} --fssize {self.lvSize}G'.format(self=self)
 		if self._debug:
 			print 'Creating local container: ' + cmd
 		try:
-			shell_exec(cmd)
+			# we're not using our shell_exec command because the lxc-create script seems to not like it
+			# Thus far this works more consistently. (http://stackoverflow.com/questions/89228/calling-an-external-command-in-python)
+			return_code = subprocess.call(cmd, shell=True)
 		except Exception as e:
-			print "lxc-create error (you probably already have a logical volume of this name): {0}".format(e)
+			print "lxc-create error: {0}".format(e)
 			exit()
 			
 	def mountLocalContainerFS(self):
