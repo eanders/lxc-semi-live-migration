@@ -44,7 +44,7 @@ class LxcMigrator:
 		self.ssh = ssh = paramiko.SSHClient()
 		
 		""" Move an LXC container from one host to another with minimal downtime
-		:param remote-password: passw0rd [optionally supplied once on the command line/hidden and saved for the duration]
+		see instructions for ssh-copy-id as passwords aren't supported
 		:param newname: local-container-name [optional] (a new name for the container on the new host)
 		:arg remote-host: old-host.domain.tld
 		:arg name: container_name (Name of the container you are moving)
@@ -117,7 +117,7 @@ class LxcMigrator:
 		parser.add_argument('remotehost', help="Source host")
 		parser.add_argument('containername', help='Source container name (also default destination name)')
 		parser.add_argument('vgname', help="Destination Volume Group")
-		parser.add_argument("-p", "--password", nargs='?', help='Password for remote-host if keys are not available')
+		#parser.add_argument("-p", "--password", nargs='?', help='Password for remote-host if keys are not available')
 		parser.add_argument("-n", "--new-name", nargs='?', help='Specify a new name for the container after migration')
 		parser.add_argument("-k", "--private-key-file", nargs='?', help='If your private key file differs from ' + self.privateKeyFile)
 		args = parser.parse_args()
@@ -231,7 +231,10 @@ class LxcMigrator:
 		self.remoteDisconnect()
 
 	def rsyncFromRemote(self):
-		cmd = 'rsync -raH --numeric-ids --delete-delay --exclude={self.localContainerName}/rootfs/proc --exclude={self.localContainerName}/rootfs/sys -e "ssh -i {self.privateKeyFile}" {self.remoteServer}:{self.lxcLocation}/{self.remoteContainerName}/  {self.lxcLocation}/{self.localContainerName}'.format(self=self)
+		if self.remotePassword is not None:
+			cmd = 'rsync -raH --numeric-ids --delete-delay --exclude={self.localContainerName}/rootfs/proc --exclude={self.localContainerName}/rootfs/sys -e "ssh " {self.remoteServer}:{self.lxcLocation}/{self.remoteContainerName}/  {self.lxcLocation}/{self.localContainerName}'.format(self=self)
+		else:
+			cmd = 'rsync -raH --numeric-ids --delete-delay --exclude={self.localContainerName}/rootfs/proc --exclude={self.localContainerName}/rootfs/sys -e "ssh -i {self.privateKeyFile}" {self.remoteServer}:{self.lxcLocation}/{self.remoteContainerName}/  {self.lxcLocation}/{self.localContainerName}'.format(self=self)
 		if self._debug:
 			print 'Rsyncing: ' + cmd
 		shell_exec(cmd)
